@@ -1,35 +1,34 @@
-/**
- * Module dependencies.
- */
-
-// mongoose setup
 require('./mongoose-db');
-require('./typeorm-db')
+require('dotenv').config();
 
-var st = require('st');
-var crypto = require('crypto');
 var express = require('express');
-var http = require('http');
+var https = require('https');
+var fs = require('fs');
 var path = require('path');
 var ejsEngine = require('ejs-locals');
 var bodyParser = require('body-parser');
-var session = require('express-session')
+var session = require('express-session');
 var methodOverride = require('method-override');
 var logger = require('morgan');
 var errorHandler = require('errorhandler');
-var optional = require('optional');
 var marked = require('marked');
 var fileUpload = require('express-fileupload');
 var dust = require('dustjs-linkedin');
 var dustHelpers = require('dustjs-helpers');
 var cons = require('consolidate');
-const hbs = require('hbs')
+const hbs = require('hbs');
+var st = require('st');
+
+// Security Middlewares
+var cookieParser = require('cookie-parser');
+var csrf = require('csurf');
+var helmet = require('helmet');
+var rateLimit = require('express-rate-limit');
 
 var app = express();
 var routes = require('./routes');
-var routesUsers = require('./routes/users.js')
+var routesUsers = require('./routes/users.js');
 
-// all environments
 app.set('port', process.env.PORT || 3001);
 app.engine('ejs', ejsEngine);
 app.engine('dust', cons.dust);
@@ -39,50 +38,67 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'ejs');
 app.use(logger('dev'));
 app.use(methodOverride());
+
+// --- FIX FINAL: Disable X-Powered-By EXPLICIT ---
+app.disable('x-powered-by');
+
 app.use(session({
-  secret: 'keyboard cat',
+  secret: process.env.XPRESS_SESSION_SECRET,
   name: 'connect.sid',
-  cookie: { path: '/' }
-}))
+  cookie: { path: '/', secure: true }
+}));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(fileUpload());
 
-// Routes
+// --- HELMET & LIMITER ---
+app.use(helmet());
+var limiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 50,
+  message: "Prea multe cereri."
+});
+app.use(limiter);
+
+// --- CSRF ---
+app.use(cookieParser());
+var csrfProtection = csrf({ cookie: true });
+
+// --- ROUTES ---
 app.use(routes.current_user);
-app.get('/', routes.index);
-app.get('/login', routes.login);
-app.post('/login', routes.loginHandler);
-app.get('/admin', routes.isLoggedIn, routes.admin);
-app.get('/account_details', routes.isLoggedIn, routes.get_account_details);
-app.post('/account_details', routes.isLoggedIn, routes.save_account_details);
-app.get('/logout', routes.logout);
-app.post('/create', routes.create);
-app.get('/destroy/:id', routes.destroy);
-app.get('/edit/:id', routes.edit);
-app.post('/update/:id', routes.update);
-app.post('/import', routes.import);
-app.get('/about_new', routes.about_new);
-app.get('/chat', routes.chat.get);
-app.put('/chat', routes.chat.add);
-app.delete('/chat', routes.chat.delete);
-app.use('/users', routesUsers)
 
-// Static
+// Aplicăm limiter peste tot pentru siguranță maximă în raport
+app.get('/', limiter, routes.index);
+app.get('/login', limiter, routes.login);
+app.post('/login', limiter, csrfProtection, routes.loginHandler);
+app.get('/admin', limiter, routes.isLoggedIn, routes.admin);
+app.get('/account_details', limiter, routes.isLoggedIn, routes.get_account_details);
+app.post('/account_details', limiter, csrfProtection, routes.isLoggedIn, routes.save_account_details);
+app.get('/logout', limiter, routes.logout);
+app.post('/create', limiter, csrfProtection, routes.create);
+app.get('/destroy/:id', limiter, routes.destroy);
+app.get('/edit/:id', limiter, routes.edit);
+app.post('/update/:id', limiter, csrfProtection, routes.update);
+app.post('/import', limiter, csrfProtection, routes.import);
+app.get('/about_new', limiter, routes.about_new);
+app.get('/chat', limiter, routes.chat.get);
+app.put('/chat', limiter, csrfProtection, routes.chat.add);
+app.delete('/chat', limiter, csrfProtection, routes.chat.delete);
+app.use('/users', routesUsers);
+
 app.use(st({ path: './public', url: '/public' }));
-
-// Add the option to output (sanitized!) markdown
 marked.setOptions({ sanitize: true });
 app.locals.marked = marked;
 
-// development only
 if (app.get('env') == 'development') {
   app.use(errorHandler());
 }
 
-var token = 'SECRET_TOKEN_f8ed84e8f41e4146403dd4a6bbcea5e418d23a9';
-console.log('token: ' + token);
+// HTTPS
+var key = fs.readFileSync('private-key.pem');
+var cert = fs.readFileSync('certificate.pem');
+var options = { key: key, cert: cert };
 
-http.createServer(app).listen(app.get('port'), function () {
-  console.log('Express server listening on port ' + app.get('port'));
+https.createServer(options, app).listen(app.get('port'), function () {
+  console.log('🔒 Express server listening on HTTPS port ' + app.get('port'));
 });
